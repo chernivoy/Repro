@@ -1,0 +1,9 @@
+# Virtual environment and build outputs: build.ps1 recreates them.
+.venv/
+build/
+dist/
+__pycache__/
+*.pyc
+
+# IDE settings
+.idea/

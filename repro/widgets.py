@@ -145,6 +145,12 @@ class Tile(tk.Canvas):
         self._layout()
         return item
 
+    def move(self, item: int, dy: float) -> None:
+        """Moves an item added with text() up or down."""
+        relx, dx, _dy = self._places[item]
+        self._places[item] = (relx, dx, dy)
+        self._layout()
+
     def set_fill(self, fill: str, hover: str | None = None) -> None:
         self._fill, self._hover_fill = fill, hover or fill
         self.repaint()
@@ -419,15 +425,17 @@ class Switch(tk.Canvas):
 
 class StepSlider(tk.Canvas):
     """Click or drag to pick a stop; double-click returns to `default`. The stretch from the
-    default stop to the knob is highlighted, so a value away from it stands out."""
+    default stop to the knob is highlighted, so a value away from it stands out: in the accent
+    colour, or in `tint` (such as the text colour, for a monochrome slider)."""
 
     def __init__(
         self, parent: tk.Widget, ui: Ui, values: Sequence[float], value: float, default: float,
-        on_change: Callable[[float], None], *, bg: str, width: float = 160,
+        on_change: Callable[[float], None], *, bg: str, width: float = 160, tint: str | None = None,
     ) -> None:
         super().__init__(parent, width=ui.px(width), height=ui.px(28), bg=bg, highlightthickness=0, bd=0,
                          cursor="hand2")
         self._ui, self._bg = ui, bg
+        self._tint = tint
         self._values = list(values)
         self._default = self._nearest_index(default)
         self._index = self._nearest_index(value)
@@ -484,6 +492,9 @@ class StepSlider(tk.Canvas):
 
     def _draw(self) -> None:
         ui, theme = self._ui, self._ui.theme
+        tint = self._tint or theme.accent
+        # Stops on the highlighted stretch: lighter on the accent, sunk into the bar on a tint.
+        stop = mix(tint, self._bg, 0.5) if self._tint else mix(theme.accent, theme.on_accent, 0.7)
         width, height = _size(self)
         paint = Paint(width, height, self._bg)
         middle, rail = height / 2, ui.px(4)
@@ -493,15 +504,15 @@ class StepSlider(tk.Canvas):
         here, default = self._x(self._index, width), self._x(self._default, width)
         if self._index != self._default:
             paint.rounded((min(here, default) - rail / 2, middle - rail / 2, max(here, default) + rail / 2,
-                           middle + rail / 2), rail / 2, fill=theme.accent)
+                           middle + rail / 2), rail / 2, fill=tint)
         low, high = sorted((self._index, self._default))
         for index in range(len(self._values)):
             active = low <= index <= high and self._index != self._default
             radius = (2.2 if index == self._default else 1.4) * ui.scale
-            color = mix(theme.accent, theme.on_accent, 0.7) if active else theme.faint
+            color = stop if active else theme.faint
             paint.circle(self._x(index, width), middle, radius, fill=color)
         paint.circle(here, middle, ui.px(10), fill=theme.knob, outline=theme.border, line=ui.px(1))
         inner = 4 if self._pressed else 6 if self._hovered else 5
-        paint.circle(here, middle, inner * ui.scale, fill=theme.accent)
+        paint.circle(here, middle, inner * ui.scale, fill=tint)
         self._photo = paint.photo()
         self.itemconfigure(self._image, image=self._photo)

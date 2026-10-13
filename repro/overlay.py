@@ -17,9 +17,9 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from . import theme, winapi
 from .capture import Rect
-from .recorder import SPEEDS, output_size, speed_text, video_divisor
+from .recorder import SPEEDS, minute_of_video, output_size, speed_text, video_divisor
 from .region import MIN_DRAG, fit_to_video, place, recording_layout
-from .theme import Ui, mix, pil_font, rgb
+from .theme import Paint, Ui, pil_font, rgb
 from .widgets import Rounded, StepSlider, Tile, Tooltip
 from .winapi import Dib, Monitor
 
@@ -107,7 +107,9 @@ def _handle_sprites(scale: float) -> dict[str, np.ndarray]:
 
 
 def _pill(text: str, scale: float, size: int) -> np.ndarray:
-    """A rounded label like CleanShot's hint, in the theme's colours, drawn at physical pixels."""
+    """A rounded label like CleanShot's hint, in the theme's colours and the interface size, drawn
+    at physical pixels."""
+    scale *= theme.interface_size()
     font = pil_font(round(size * scale))
     left, top, right, bottom = font.getbbox(text)
     pad_x, pad_y = round(size * 1.1 * scale), round(size * 0.55 * scale)
@@ -260,8 +262,8 @@ class CaptureOverlay:
     def toggle_theme(self) -> None:
         self._actions.on_theme()
 
-    def set_theme(self) -> None:
-        """The theme changed: hints and the panel in the new colours."""
+    def restyle(self) -> None:
+        """The theme or the interface size changed: hints and the panel in the new colours and size."""
         self._make_hints()
         self._badge = None
         self.panel.rebuild()
@@ -310,6 +312,7 @@ class CaptureOverlay:
         window.bind("<ButtonPress-3>", lambda _event: self.escape())
 
     def _on_press(self, layer: _Layer, event: tk.Event) -> None:
+        self.panel.close_popup()
         self._press = (layer, event.x, event.y)
         if self._window_mode:
             self._mode = ("window", "")
@@ -606,17 +609,18 @@ class CaptureOverlay:
 
 
 class ControlPanel:
-    """The floating HUD: settings, video size, whole monitor, remembered area and theme; camera,
-    cursor and keystroke toggles; video speed; Record Video. The camera is a placeholder for later.
-    Built at the scale of the monitor it is shown on, and again when that or the theme changes."""
+    """The floating HUD: settings, video size, whole monitor, remembered area and theme; video
+    speed (its slider drops down from its tile), cursor and keystroke toggles; Record Video.
+    Built at the scale of the monitor it is shown on, and again when that, the theme or the
+    interface size changes."""
 
-    SETTINGS, FULLSCREEN, CROP, CAMERA, POINTER, KEYBOARD, ENTER, RECORD, SUN, MOON = (
-        "\ue9e9", "\ue740", "\ue7a8", "\ue714", "\ue8b0", "\ue765", "\ue751", "\ue7c8", "\ue706", "\ue708"
+    SETTINGS, FULLSCREEN, CROP, POINTER, KEYBOARD, ENTER, RECORD, SUN, MOON = (
+        "\ue9e9", "\ue740", "\ue7a8", "\ue8b0", "\ue765", "\ue751", "\uea0c", "\ue706", "\ue708"
     )
-    TOGGLES = (  # name, glyph, caption, tooltip
-        ("camera", CAMERA, "Камера", "Камера — буде в наступних версіях"),
-        ("cursor", POINTER, "Курсор", "Курсор миші у відео"),
-        ("keys", KEYBOARD, "Клавіші", "Натискання клавіш у відео"),
+    SLOWER, NORMAL, FASTER = "\uec48", "\uec49", "\uec4a"  # a gauge leaning with the video speed
+    TOGGLES = (  # name, glyph, tooltip
+        ("cursor", POINTER, "Курсор миші у відео"),
+        ("keys", KEYBOARD, "Натискання клавіш у відео"),
     )
 
     def __init__(self, root: tk.Tk, toggles: dict[str, bool], speed: float, overlay: CaptureOverlay) -> None:
@@ -626,19 +630,22 @@ class ControlPanel:
         self._shown_size = (0, 0)
         self._scale = 0.0
         self._body: tk.Frame | None = None
-        self._tiles: dict[str, tuple[Tile, int, int]] = {}
+        self._tiles: dict[str, tuple[Tile, int]] = {}
+        self._popup: tk.Toplevel | None = None  # the speed slider, dropped down from its tile
         self.window = tk.Toplevel(root)
         self.window.withdraw()
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
         self.window.bind("<Return>", lambda _event: overlay.record())
         self.window.bind("<KP_Enter>", lambda _event: overlay.record())
-        self.window.bind("<Escape>", lambda _event: overlay.escape())
+        self.window.bind("<Escape>", lambda _event: self.close_popup() if self._popup else overlay.escape())
         self.window.bind("<space>", lambda _event: overlay.toggle_window_mode())
+        self.window.bind("<ButtonPress>", self._press_elsewhere, add="+")
 
     def rebuild(self) -> None:
-        """The theme changed."""
+        """The theme or the interface size changed."""
         if self._body:
+            self.close_popup()
             self._build(self._scale)
 
     def _build(self, scale: float) -> None:
@@ -671,36 +678,29 @@ class ControlPanel:
 
         toggles = tk.Frame(body, bg=theme.panel)
         toggles.pack(fill="x", pady=(gap, 0))
-        self._tiles = {}
-        for column, (name, glyph, caption, tip) in enumerate(self.TOGGLES):
+        for column in range(1 + len(self.TOGGLES)):
             toggles.columnconfigure(column, weight=1, uniform="toggle")
-            tile = Tile(toggles, ui, bg=theme.panel, fill=theme.tile, width=64, height=58, radius=8,
-                        command=None if name == "camera" else lambda name=name: self._flip(name))
-            icon = tile.text(glyph, ui.font(18, "icons"), theme.text, dy=-8)
-            label = tile.text(caption, ui.font(11), theme.muted, dy=14)
-            tile.grid(row=0, column=column, sticky="nsew", padx=(0, gap if column < len(self.TOGGLES) - 1 else 0))
+        speed = self._speed_tile = Tile(toggles, ui, bg=theme.panel, fill=theme.tile, width=64, height=50, radius=8,
+                                        command=self._toggle_popup)
+        self._speed_icon = speed.text(self.NORMAL, ui.font(18, "icons"), theme.text, dy=-6)
+        self._speed_label = speed.text("", ui.font(12, "semibold"), theme.text, dy=13)
+        speed.grid(row=0, column=0, sticky="nsew", padx=(0, gap))
+        self._paint_speed()
+        self._tiles = {}
+        for column, (name, glyph, tip) in enumerate(self.TOGGLES, start=1):
+            tile = Tile(toggles, ui, bg=theme.panel, fill=theme.tile, width=64, height=50, radius=8,
+                        command=lambda name=name: self._flip(name))
+            icon = tile.text(glyph, ui.font(18, "icons"), theme.text)
+            tile.grid(row=0, column=column, sticky="nsew", padx=(0, gap if column < len(self.TOGGLES) else 0))
             Tooltip(tile, tip)
-            self._tiles[name] = (tile, icon, label)
+            self._tiles[name] = (tile, icon)
             self._paint_toggle(name)
 
-        speed = Rounded(body, ui, theme.tile, theme.panel, radius=8, padx=12, pady=6)
-        speed.pack(fill="x", pady=(gap, 0))
-        title = tk.Label(speed.body, text="Швидкість", font=ui.font(13), fg=theme.muted, bg=theme.tile)
-        title.pack(side="left")
-        self._speed_value = tk.Label(speed.body, text=speed_text(self._speed), font=ui.font(13, "semibold"),
-                                     fg=theme.text, bg=theme.tile, width=4, anchor="e")
-        self._speed_value.pack(side="right")
-        self._speed_slider = StepSlider(speed.body, ui, SPEEDS, self._speed, 1.0, self._pick_speed, bg=theme.tile,
-                                        width=150)
-        self._speed_slider.pack(side="left", fill="x", expand=True, padx=ui.px(8))
-        Tooltip(speed, "Швидкість відео: вище 1× — швидше й коротше, нижче — повільніше й довше. "
-                       "Подвійний клік — 1×", title, self._speed_value, self._speed_slider)
-
-        record = Tile(body, ui, bg=theme.panel, fill=theme.danger, hover=theme.danger_hover,
+        record = Tile(body, ui, bg=theme.panel, fill=theme.tile, hover=theme.tile_hover,
                       command=self._overlay.record, width=200, height=48, radius=10)
-        record.text(self.RECORD, ui.font(17, "icons"), "#ffffff", relx=0, dx=18, anchor="w")
-        record.text("Записати відео", ui.font(15, "semibold"), "#ffffff", relx=0, dx=48, anchor="w")
-        record.text(self.ENTER, ui.font(14, "icons"), mix("#ffffff", theme.danger, 0.3), relx=1, dx=-18, anchor="e")
+        record.text(self.RECORD, ui.font(18, "icons"), theme.text, relx=0, dx=18, anchor="w")
+        record.text("Записати відео", ui.font(15, "semibold"), theme.text, relx=0, dx=50, anchor="w")
+        record.text(self.ENTER, ui.font(14, "icons"), theme.muted, relx=1, dx=-18, anchor="e")
         record.pack(fill="x", pady=(gap, 0))
 
         old, self._body = self._body, body
@@ -752,17 +752,91 @@ class ControlPanel:
         self.set_toggle(name, not self._toggles[name])
         self._overlay.set_toggle(name, self._toggles[name])
 
+    # --- Video speed ---------------------------------------------------------------------
+
+    def _paint_speed(self) -> None:
+        """The speed tile: a gauge leaning with the speed, and the speed under it; pressed while
+        its slider is open."""
+        theme, tile = self._ui.theme, self._speed_tile
+        if self._popup:
+            tile.set_fill(theme.tile_on, theme.tile_on_hover)
+        else:
+            tile.set_fill(theme.tile, theme.tile_hover)
+        glyph = self.SLOWER if self._speed < 1 else self.FASTER if self._speed > 1 else self.NORMAL
+        bright = self._popup is not None or self._speed != 1
+        tile.itemconfigure(self._speed_icon, text=glyph, fill=theme.text if bright else theme.muted)
+        tile.itemconfigure(self._speed_label, text=speed_text(self._speed))
+
+    def _toggle_popup(self) -> None:
+        if self._popup:
+            self.close_popup()
+        else:
+            self._open_popup()
+
+    def _open_popup(self) -> None:
+        """The speed slider in a flyout under its tile, above it when the screen ends below.
+        It does not take focus, so Enter, Esc and Space still reach the panel."""
+        ui, theme, tile = self._ui, self._ui.theme, self._speed_tile
+        popup = self._popup = tk.Toplevel(self.window, bg=theme.panel)
+        popup.withdraw()
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        body = tk.Frame(popup, bg=theme.panel)
+        body.pack(padx=ui.px(14), pady=(ui.px(10), ui.px(12)))
+        head = tk.Frame(body, bg=theme.panel)
+        head.pack(fill="x")
+        tk.Label(head, text="Швидкість відео", font=ui.font(13), fg=theme.text, bg=theme.panel).pack(side="left")
+        self._popup_value = tk.Label(head, font=ui.font(13, "semibold"), fg=theme.text, bg=theme.panel)
+        self._popup_value.pack(side="right")
+        self._popup_slider = StepSlider(body, ui, SPEEDS, self._speed, 1.0, self._pick_speed, bg=theme.panel,
+                                        width=240, tint=theme.text)  # no accent colour on the panel
+        self._popup_slider.pack(pady=(ui.px(6), ui.px(4)))
+        self._popup_hint = tk.Label(body, font=ui.font(12), fg=theme.muted, bg=theme.panel, anchor="w")
+        self._popup_hint.pack(fill="x")
+        self._show_popup_speed()
+        popup.update_idletasks()
+        width, height = popup.winfo_reqwidth(), popup.winfo_reqheight()
+        (left, top, right, bottom), _scale = winapi.monitor_at(tile.winfo_rootx(), tile.winfo_rooty())
+        x = min(max(left, tile.winfo_rootx()), right - width)
+        y = tile.winfo_rooty() + tile.winfo_height() + ui.px(6)
+        if y + height > bottom:
+            y = tile.winfo_rooty() - height - ui.px(6)
+        popup.geometry(f"+{x}+{y}")
+        winapi.make_no_activate(popup.winfo_id())
+        winapi.round_corners(popup.winfo_id(), border=theme.border)
+        popup.deiconify()
+        self._paint_speed()
+
+    def _show_popup_speed(self) -> None:
+        self._popup_value.configure(text=speed_text(self._speed))
+        length = "хвилина" if self._speed == 1 else minute_of_video(self._speed)
+        self._popup_hint.configure(text=f"Хвилина запису → {length} відео")
+
+    def close_popup(self) -> None:
+        if self._popup:
+            popup, self._popup = self._popup, None
+            popup.destroy()
+            self._paint_speed()
+
+    def _press_elsewhere(self, event: tk.Event) -> None:
+        """A click anywhere on the panel but the speed tile closes the speed slider."""
+        if self._popup and event.widget is not self._speed_tile:
+            self.close_popup()
+
     def _pick_speed(self, speed: float) -> None:
-        self._speed = speed
-        self._speed_value.configure(text=speed_text(speed))
+        self.set_speed(speed)
         self._overlay.set_speed(speed)
 
     def set_speed(self, speed: float) -> None:
         """Shows the speed, also when it was changed in the settings window."""
         self._speed = speed
         if self._body:
-            self._speed_slider.set(speed)
-            self._speed_value.configure(text=speed_text(speed))
+            self._paint_speed()
+        if self._popup:
+            self._popup_slider.set(speed)
+            self._show_popup_speed()
+
+    # --- Toggles ---------------------------------------------------------------------
 
     def set_toggle(self, name: str, enabled: bool) -> None:
         """Shows a toggle's state, also when it was changed in the settings window."""
@@ -771,20 +845,27 @@ class ControlPanel:
             self._paint_toggle(name)
 
     def _paint_toggle(self, name: str) -> None:
-        """On: an accent tile, like Windows' quick settings. The camera is not there yet."""
+        """On: pressed in, with a bright icon and a check under it, like CleanShot. Off: a dimmed
+        icon."""
         theme = self._ui.theme
-        tile, icon, label = self._tiles[name]
-        if name == "camera":
-            tile.set_fill(theme.tile)
-            colors = (theme.faint, theme.faint)
-        elif self._toggles[name]:
-            tile.set_fill(theme.accent, theme.accent_hover)
-            colors = (theme.on_accent, theme.on_accent)
+        tile, icon = self._tiles[name]
+        on = self._toggles[name]
+        tile.decorate = self._check_mark if on else None
+        if on:
+            tile.set_fill(theme.tile_on, theme.tile_on_hover)
+            color = theme.text
         else:
             tile.set_fill(theme.tile, theme.tile_hover)
-            colors = (theme.text, theme.muted)
-        tile.itemconfigure(icon, fill=colors[0])
-        tile.itemconfigure(label, fill=colors[1])
+            color = theme.muted
+        tile.itemconfigure(icon, fill=color)
+        tile.move(icon, -5 if on else 0)
+
+    def _check_mark(self, paint: Paint, width: int, height: int) -> None:
+        """The check under the icon of a toggle that is on."""
+        ui = self._ui
+        x, y = width / 2, height / 2 + ui.scale * 13
+        points = [(x + ui.scale * dx, y + ui.scale * dy) for dx, dy in ((-4, 0), (-1.3, 2.7), (4, -2.7))]
+        paint.stroke(points, 1.7 * ui.scale, ui.theme.text)
 
     # --- Placement -------------------------------------------------------------------
 
@@ -800,6 +881,7 @@ class ControlPanel:
 
     def show(self, monitor: Monitor, rect: Rect) -> None:
         """Centred in the selection; below or above it when it is too small to hold the panel."""
+        self.close_popup()
         if monitor.scale != self._scale:
             self._build(monitor.scale)
         self.window.update_idletasks()
@@ -822,7 +904,9 @@ class ControlPanel:
         self.window.focus_force()
 
     def hide(self) -> None:
+        self.close_popup()
         self.window.withdraw()
 
     def close(self) -> None:
+        self.close_popup()
         self.window.destroy()

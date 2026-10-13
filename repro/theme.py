@@ -1,8 +1,9 @@
 """Light and dark themes, fonts, and crisp shapes for the app's windows.
 
 Sizes are given in logical pixels (as at 100%) and turned into physical ones with the scale of
-the monitor a window is on, so text and controls keep their size on every monitor. Fonts are
-sized in pixels for the same reason: Tk's point sizes follow one DPI for the whole process."""
+the monitor a window is on, so text and controls keep their size on every monitor; the interface
+size picked in the settings scales them all on top of that. Fonts are sized in pixels for the
+same reason: Tk's point sizes follow one DPI for the whole process."""
 
 from __future__ import annotations
 
@@ -41,6 +42,8 @@ class Theme:
     panel: str  # floating panels: the capture HUD, the recording bar
     tile: str
     tile_hover: str
+    tile_on: str  # a toggle that is on: pressed in, darker
+    tile_on_hover: str
     field: str
 
 
@@ -51,7 +54,8 @@ LIGHT = Theme(
     text="#1b1c22", muted="#5f6371", faint="#9a9eab",
     accent="#5458e0", accent_hover="#4448cf", on_accent="#ffffff",
     danger="#e5484d", danger_hover="#d23a40", warning="#e08a00", success="#2fb26a",
-    track="#cdd0d9", panel="#f3f4f7", tile="#ffffff", tile_hover="#e8eaf0", field="#eceef3",
+    track="#cdd0d9", panel="#f3f4f7", tile="#ffffff", tile_hover="#e8eaf0", tile_on="#dfe1e8",
+    tile_on_hover="#d7dae2", field="#eceef3",
 )
 # Graphite rather than black: easier on the eyes, and cards still stand out from the window.
 DARK = Theme(
@@ -61,7 +65,8 @@ DARK = Theme(
     text="#eeeff3", muted="#a6a9b4", faint="#7c7f8a",
     accent="#7378f5", accent_hover="#8287ff", on_accent="#ffffff",
     danger="#ef5157", danger_hover="#ff6469", warning="#ffb340", success="#3ccf7e",
-    track="#5b5e69", panel="#2b2c32", tile="#3a3b43", tile_hover="#45474f", field="#2f3036",
+    track="#5b5e69", panel="#2b2c32", tile="#3a3b43", tile_hover="#45474f", tile_on="#222328",
+    tile_on_hover="#1d1e22", field="#2f3036",
 )
 THEMES = {"light": LIGHT, "dark": DARK}
 
@@ -76,6 +81,22 @@ def use(name: str) -> Theme:
     global _current
     _current = THEMES.get(name) or THEMES[system_theme()]
     return _current
+
+
+# The interface size, as a share of the monitor's scale: smaller or larger panels and windows.
+INTERFACE_SIZES = tuple(round(0.7 + 0.05 * step, 2) for step in range(13))  # 70% … 130%
+_interface_size = 1.0
+
+
+def interface_size() -> float:
+    return _interface_size
+
+
+def set_interface_size(value: float) -> float:
+    """Takes the nearest of INTERFACE_SIZES; returns it."""
+    global _interface_size
+    _interface_size = min(INTERFACE_SIZES, key=lambda size: abs(size - value))
+    return _interface_size
 
 
 def system_theme() -> str:
@@ -130,10 +151,11 @@ def pil_font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
 
 
 class Ui:
-    """Theme, scale and fonts for one window."""
+    """Theme, scale and fonts for one window. `scale` is the monitor's; `self.scale` adds the
+    interface size to it."""
 
     def __init__(self, scale: float, theme: Theme | None = None) -> None:
-        self.scale = scale
+        self.scale = scale * _interface_size
         self.theme = theme or _current
         self._measures: dict[tuple, tkfont.Font] = {}
 
@@ -200,6 +222,21 @@ class Paint:
             return
         xs, ys, view = area
         self._shape(view, np.hypot(xs - x, ys - y) - radius, fill, outline, line, alpha)
+
+    def stroke(self, points: list[tuple[float, float]], width: float, fill: str) -> None:
+        """A line through the points with round ends and joins, such as a check mark."""
+        half = width / 2
+        area = self._area(min(x for x, _ in points) - half, min(y for _, y in points) - half,
+                          max(x for x, _ in points) + half, max(y for _, y in points) + half)
+        if area is None:
+            return
+        xs, ys, view = area
+        distance = np.full(xs.shape, np.inf, np.float32)
+        for (ax, ay), (bx, by) in zip(points, points[1:]):
+            dx, dy = bx - ax, by - ay
+            t = np.clip(((xs - ax) * dx + (ys - ay) * dy) / max(dx * dx + dy * dy, 1e-6), 0, 1)
+            distance = np.minimum(distance, np.hypot(xs - ax - t * dx, ys - ay - t * dy))
+        self._shape(view, distance - half, fill, None, 0.0, 1.0)
 
     def _area(self, left: float, top: float, right: float, bottom: float):
         """Pixel centres around a shape, and the matching view of the pixels."""

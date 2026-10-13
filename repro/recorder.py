@@ -90,6 +90,18 @@ def speed_text(speed: float) -> str:
     return f"{speed:g}×"
 
 
+def minute_of_video(speed: float) -> str:
+    """How long a minute of recording plays in the video: "1 хв 26 с", "50 с"."""
+    seconds = round(60 / speed)
+    return f"{seconds // 60} хв {seconds % 60} с" if seconds >= 60 else f"{seconds} с"
+
+
+def speed_hint(speed: float) -> str:
+    if speed == 1.0:
+        return "Як на екрані: хвилина запису — хвилина відео."
+    return f"{'Швидше' if speed > 1 else 'Повільніше'}: хвилина запису стане відео на {minute_of_video(speed)}."
+
+
 def snap_speed(speed: float) -> float:
     return min(SPEEDS, key=lambda option: abs(option - speed))
 

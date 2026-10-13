@@ -71,6 +71,10 @@ def valid_area(monitor: Monitor, area: list[int] | None) -> Rect | None:
     return x, y, width, height
 
 
+def same_path(first: Path, second: Path) -> bool:
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
 def format_duration(seconds: float) -> str:
     seconds = int(seconds)
     return f"{seconds // 3600:02d}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
@@ -84,6 +88,7 @@ class App:
     def __init__(self) -> None:
         self.settings = Settings.load()
         theme.use(self.settings.theme)
+        self.settings.interface_size = theme.set_interface_size(self.settings.interface_size)
         self.monitors = winapi.list_monitors()
         self.recorder: Recorder | None = None
         self.overlay: CaptureOverlay | None = None
@@ -225,16 +230,31 @@ class App:
         self.settings.theme = name
         self.settings.save()
         theme.use(name)
-        self.window.build()
-        if self.overlay:
-            self.overlay.set_theme()
-        if self.recording_bar:
-            self.recording_bar.set_theme()
-        if self.confirm:
-            self.confirm.set_theme()
+        self._restyle()
 
     def toggle_theme(self) -> None:
         self.set_theme("light" if theme.current().dark else "dark")
+
+    def interface_size(self) -> float:
+        return theme.interface_size()
+
+    def set_interface_size(self, size: float) -> None:
+        """Smaller or larger panels and windows, from the settings window; open ones follow."""
+        if size == theme.interface_size():
+            return
+        self.settings.interface_size = theme.set_interface_size(size)
+        self.settings.save()
+        self._restyle()
+
+    def _restyle(self) -> None:
+        """Rebuilds the open windows in the current theme and interface size."""
+        self.window.build()
+        if self.overlay:
+            self.overlay.restyle()
+        if self.recording_bar:
+            self.recording_bar.restyle()
+        if self.confirm:
+            self.confirm.restyle()
 
     # --- Hotkeys ---------------------------------------------------------------------
 
@@ -290,6 +310,8 @@ class App:
         self.window.set_hotkey_hint(text)
 
     def show_settings(self) -> None:
+        if self.root.state() == "withdrawn":  # opening it; one already open stays where it is
+            self.window.center()
         self.root.deiconify()
         self.root.lift()
         # Above the overlay layers while they cover the screen.
@@ -552,10 +574,12 @@ class App:
             self.window.refresh()
 
     def open_folder(self) -> None:
-        if self.last_file and self.last_file.exists():
+        """The video folder, with the last video selected while it is in there: after the folder
+        is changed, the last video is left behind in the old one."""
+        folder = Path(self.settings.output_dir)
+        if self.last_file and self.last_file.exists() and same_path(self.last_file.parent, folder):
             subprocess.Popen(f'explorer /select,"{self.last_file}"')
             return
-        folder = Path(self.settings.output_dir)
         folder.mkdir(parents=True, exist_ok=True)
         os.startfile(folder)
 

@@ -1,7 +1,7 @@
 """CleanShot-style controls while recording: stop, timer, pause, restart and delete, and a grip
 to drag the bar elsewhere. The bar starts on the recorded monitor and is excluded from screen
 capture, as are its tooltips and the delete confirmation, so none of them shows up in the video.
-It is drawn at the scale of the monitor it is on, and follows the theme."""
+It is drawn at the scale of the monitor it is on, and follows the theme and the interface size."""
 
 from __future__ import annotations
 
@@ -101,9 +101,11 @@ class RecordingBar:
 
     @property
     def scale(self) -> float:
-        return self._ui.scale
+        """The scale of the monitor the bar is on."""
+        return self._scale
 
     def _build(self, scale: float) -> None:
+        self._scale = scale
         ui = self._ui = Ui(scale)
         theme = ui.theme
         pad = ui.px(6)
@@ -198,13 +200,15 @@ class RecordingBar:
         if not self._drag:
             return
         self._drag = None
-        if self.screen.scale != self._ui.scale:  # dropped on a monitor with another scale: redraw at its size
+        if self.screen.scale != self._scale:  # dropped on a monitor with another scale: redraw at its size
             self._build(self.screen.scale)
             self._move(self.screen, self.window.winfo_rootx(), self.window.winfo_rooty())
         self._actions.on_moved(self.window.winfo_rootx(), self.window.winfo_rooty())
 
-    def set_theme(self) -> None:
-        self._build(self._ui.scale)
+    def restyle(self) -> None:
+        """The theme or the interface size changed."""
+        self._build(self._scale)
+        self._move(self.screen, self.window.winfo_rootx(), self.window.winfo_rooty())  # still all on screen
 
     def set_time(self, seconds: float) -> None:
         self._seconds = seconds
@@ -296,7 +300,7 @@ class ConfirmDelete:
         self.window.update_idletasks()
         winapi.round_corners(self.window.winfo_id(), border=theme.border)
 
-    def set_theme(self) -> None:
+    def restyle(self) -> None:
         self._build()
 
     def confirm(self) -> None:

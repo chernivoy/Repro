@@ -1,6 +1,6 @@
 """The settings window, laid out like Windows 11 Settings: navigation on the left, pages of setting
-cards on the right and a status line under them. It is built for the current theme and for the
-scale of the monitor it is on, and rebuilt when either changes."""
+cards on the right and a status line under them. It is built for the current theme, the
+interface size and the scale of the monitor it is on, and rebuilt when any of them changes."""
 
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ from . import winapi
 from .hotkey_field import HotkeyField, Keycaps
 from .icons import make_icon
 from .inputs import KEYS_ALL, KEYS_SHORTCUTS
-from .recorder import DEFAULT_SHARPNESS, FRAME_RATES, QUALITIES, RESOLUTIONS, SHARPNESS, SPEEDS, speed_text
-from .theme import Paint, Ui, mix
+from .recorder import (
+    DEFAULT_SHARPNESS, FRAME_RATES, QUALITIES, RESOLUTIONS, SHARPNESS, SPEEDS, speed_hint, speed_text,
+)
+from .theme import INTERFACE_SIZES, Paint, Ui, mix
 from .widgets import Rounded, Segmented, StepSlider, Switch, Tile, button
 
 if TYPE_CHECKING:
@@ -46,12 +48,8 @@ CARD_PAD = 18
 INNER = CARD_WIDTH - 2 * CARD_PAD - 2  # inside a card's padding and border
 
 
-def speed_hint(speed: float) -> str:
-    if speed == 1.0:
-        return "Як на екрані: хвилина запису — хвилина відео."
-    seconds = round(60 / speed)
-    length = f"{seconds // 60} хв {seconds % 60} с" if seconds >= 60 else f"{seconds} с"
-    return f"{'Швидше' if speed > 1 else 'Повільніше'}: хвилина запису стане відео на {length}."
+def size_text(size: float) -> str:
+    return f"{round(size * 100)}%"
 
 
 class SettingsWindow:
@@ -70,11 +68,11 @@ class SettingsWindow:
 
     # --- Public ------------------------------------------------------------------
 
-    def build(self) -> None:
-        """(Re)builds the window for the current theme and the scale of its monitor."""
+    def build(self, scale: float | None = None) -> None:
+        """(Re)builds the window for the current theme and `scale`, by default its monitor's."""
         for field in self.hotkey_fields.values():
             field.cancel()
-        self._scale = winapi.window_scale(self.root.winfo_id())
+        self._scale = scale or winapi.window_scale(self.root.winfo_id())
         ui = self.ui = Ui(self._scale)
         self.root.configure(bg=ui.theme.bg)
         frame = tk.Frame(self.root, bg=ui.theme.bg)
@@ -87,6 +85,19 @@ class SettingsWindow:
         self.refresh()
         self.show_page(self.page)
         self.style_title_bar()
+
+    def center(self) -> None:
+        """Before it is shown: in the middle of the monitor under the pointer, at its scale."""
+        (left, top, right, bottom), scale = winapi.monitor_at(*winapi.cursor_position())
+        if scale != self._scale:
+            self.build(scale)
+        self.root.update_idletasks()
+        width, height = winapi.frame_size(self.root.winfo_id(), self.root.winfo_reqwidth(),
+                                          self.root.winfo_reqheight(), scale)
+        # Larger than the work area: its title bar stays on screen.
+        x = left + max(0, (right - left - width) // 2)
+        y = top + max(0, (bottom - top - height) // 2)
+        self.root.geometry(f"+{x}+{y}")
 
     def style_title_bar(self) -> None:
         theme = self.ui.theme
@@ -122,6 +133,9 @@ class SettingsWindow:
 
         for name, field in self.hotkey_fields.items():
             field.set(getattr(settings, name))
+        size = app.interface_size()
+        self.interface_size.set(size)
+        self.interface_size_value.configure(text=size_text(size))
         self.folder.configure(text=settings.output_dir)
 
     def set_status(self, text: str, tone: str = "idle") -> None:
@@ -302,6 +316,14 @@ class SettingsWindow:
     def _page_general(self, page: tk.Frame) -> None:
         ui, theme = self.ui, self.ui.theme
         card = self._card(page)
+        hint, row = self._row(card, "Розмір інтерфейсу", first=True)
+        hint.configure(text="Панелі запису, підказки й це вікно. Подвійний клік повертає 100%.")
+        self.interface_size, self.interface_size_value = self._slider(
+            row, list(INTERFACE_SIZES), 1.0, lambda size: self.interface_size_value.configure(text=size_text(size)))
+        # Applied when the slider is let go: that rebuilds this window, slider included.
+        self.interface_size.bind("<ButtonRelease-1>", self._apply_interface_size, add="+")
+
+        card = self._card(page)
         self.folder, row = self._row(card, "Папка для відео", first=True)
         buttons = tk.Frame(row, bg=theme.surface)
         self._below(row, buttons)
@@ -313,6 +335,9 @@ class SettingsWindow:
         hint, _row = self._row(card, "Про Repro", first=True)
         hint.configure(text="Записує екран у відео MP4 (H.264). Програма живе в треї біля годинника: "
                             "клацніть іконку, щоб почати запис.")
+
+    def _apply_interface_size(self, _event: tk.Event) -> None:
+        self.root.after_idle(self.app.set_interface_size, self.interface_size.value)
 
     # --- Building blocks ---------------------------------------------------------------
 

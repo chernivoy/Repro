@@ -280,6 +280,7 @@ def draw_cursor(handle: int) -> tuple[np.ndarray, np.ndarray, int, int] | None:
 
 # --- Window styles -----------------------------------------------------------
 
+GWL_STYLE = -16
 GWL_EXSTYLE = -20
 WS_EX_TRANSPARENT = 0x20
 WS_EX_TOOLWINDOW = 0x80
@@ -609,12 +610,26 @@ user32.GetDpiForWindow.argtypes = [wintypes.HWND]
 user32.GetDpiForWindow.restype = wintypes.UINT
 user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
 user32.MonitorFromPoint.restype = wintypes.HMONITOR
+user32.AdjustWindowRectExForDpi.argtypes = [
+    ctypes.POINTER(wintypes.RECT), wintypes.DWORD, wintypes.BOOL, wintypes.DWORD, wintypes.UINT
+]
 
 
 def window_scale(tk_window_id: int) -> float:
     """1.0 at 100%, 2.0 at 200%: the scale of the monitor the window is on."""
     dpi = user32.GetDpiForWindow(user32.GetAncestor(tk_window_id, GA_ROOT))
     return dpi / 96 if dpi else 1.0
+
+
+def frame_size(tk_window_id: int, width: int, height: int, scale: float) -> tuple[int, int]:
+    """The outer size of a window with a width × height client area on a monitor at this scale:
+    with its title bar and borders, as Tk's `wm geometry` positions it."""
+    hwnd = user32.GetAncestor(tk_window_id, GA_ROOT)
+    rect = wintypes.RECT(0, 0, width, height)
+    style = user32.GetWindowLongPtrW(hwnd, GWL_STYLE) & 0xFFFFFFFF
+    ex_style = user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & 0xFFFFFFFF
+    user32.AdjustWindowRectExForDpi(ctypes.byref(rect), style, False, ex_style, round(96 * scale))
+    return rect.right - rect.left, rect.bottom - rect.top
 
 
 def monitor_at(x: int, y: int) -> tuple[tuple[int, int, int, int], float]:

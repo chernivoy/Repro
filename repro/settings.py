@@ -38,6 +38,7 @@ class Settings:
     show_keys: bool = True
     keys_mode: str = "all"  # "all" or "shortcuts" (with Ctrl, Alt or Win; F-keys, Enter, Backspace)
     theme: str = ""  # "light" or "dark"; empty: as Windows' app mode, until picked
+    interface_size: float = 1.0  # panels and windows, as a share of the monitor's scale; one of theme.INTERFACE_SIZES
 
     @classmethod
     def load(cls) -> Settings:
